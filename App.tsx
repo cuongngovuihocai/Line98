@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Trophy, RotateCcw, ArrowRightLeft, Hammer, Moon, Sun } from 'lucide-react';
-import { GridState, Position, PendingBall } from './types';
+import { Trophy, RotateCcw, ArrowRightLeft, Hammer, Moon, Sun, Save, Medal } from 'lucide-react';
+import { GridState, Position, PendingBall, LeaderboardEntry, BallColor } from './types';
 import { GRID_SIZE, INITIAL_SWAPS, INITIAL_HAMMERS } from './constants';
 import { generateEmptyGrid, getRandomColor, getEmptyCells, checkLinesAndScore } from './utils/gameLogic';
 import { findPath } from './utils/pathfinding';
@@ -16,6 +16,7 @@ const App: React.FC = () => {
   const [pendingBalls, setPendingBalls] = useState<PendingBall[]>([]);
   const [selectedPos, setSelectedPos] = useState<Position | null>(null);
   const [gameOver, setGameOver] = useState(false);
+  const [isAnimating, setIsAnimating] = useState(false); // Block interactions during movement
   
   // Power-ups State
   const [swapsLeft, setSwapsLeft] = useState(INITIAL_SWAPS);
@@ -25,6 +26,11 @@ const App: React.FC = () => {
 
   // Theme State
   const [darkMode, setDarkMode] = useState(false);
+
+  // Leaderboard State
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  const [showNameInput, setShowNameInput] = useState(false);
+  const [playerName, setPlayerName] = useState('');
 
   // Init Theme
   useEffect(() => {
@@ -42,10 +48,19 @@ const App: React.FC = () => {
     document.body.style.backgroundColor = darkMode ? '#020617' : '#eef2f6';
   }, [darkMode]);
 
-  // Load High Score
+  // Load High Score & Leaderboard
   useEffect(() => {
-    const saved = localStorage.getItem('line98-highscore');
-    if (saved) setHighScore(parseInt(saved));
+    const savedScore = localStorage.getItem('line98-highscore');
+    if (savedScore) setHighScore(parseInt(savedScore));
+
+    const savedLB = localStorage.getItem('line98-leaderboard');
+    if (savedLB) {
+        try {
+            setLeaderboard(JSON.parse(savedLB));
+        } catch (e) {
+            console.error("Failed to parse leaderboard", e);
+        }
+    }
   }, []);
 
   // Save High Score
@@ -55,6 +70,37 @@ const App: React.FC = () => {
       localStorage.setItem('line98-highscore', score.toString());
     }
   }, [score, highScore]);
+
+  // Check Game Over qualification for Leaderboard
+  useEffect(() => {
+    if (gameOver && score > 0) {
+      // Check if score qualifies for top 5
+      const isQualifying = leaderboard.length < 5 || score > leaderboard[leaderboard.length - 1].score;
+      if (isQualifying) {
+        setShowNameInput(true);
+      } else {
+        setShowNameInput(false);
+      }
+    }
+  }, [gameOver, score]); 
+
+  const handleSaveLeaderboard = () => {
+    if (!playerName.trim()) return;
+
+    const newEntry: LeaderboardEntry = {
+        name: playerName.trim().substring(0, 15),
+        score: score,
+        timestamp: Date.now()
+    };
+
+    const newBoard = [...leaderboard, newEntry]
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 5);
+
+    setLeaderboard(newBoard);
+    localStorage.setItem('line98-leaderboard', JSON.stringify(newBoard));
+    setShowNameInput(false);
+  };
 
   // --- Sound Effect ---
   const playScoreSound = useCallback(() => {
@@ -71,7 +117,6 @@ const App: React.FC = () => {
         
         // Create a pleasant "ding" sound
         osc.type = 'sine';
-        // Slide form E5 (659Hz) to A5 (880Hz) quickly
         osc.frequency.setValueAtTime(659.25, ctx.currentTime);
         osc.frequency.linearRampToValueAtTime(880, ctx.currentTime + 0.1);
         
@@ -82,7 +127,7 @@ const App: React.FC = () => {
         osc.start();
         osc.stop(ctx.currentTime + 0.6);
     } catch (e) {
-        // Ignore audio errors (e.g. if user hasn't interacted yet)
+        // Ignore audio errors
     }
   }, []);
 
@@ -128,12 +173,17 @@ const App: React.FC = () => {
     setPendingBalls(generatePendingBalls(newGrid)); 
     setSelectedPos(null);
     setGameOver(false);
+    setIsAnimating(false);
     
     // Reset Power-ups
     setSwapsLeft(INITIAL_SWAPS);
     setHammersLeft(INITIAL_HAMMERS);
     setActiveTool('none');
     setSwapSource(null);
+
+    // Reset Leaderboard Input
+    setShowNameInput(false);
+    setPlayerName('');
   }, []);
 
   // Start game on mount
@@ -144,7 +194,7 @@ const App: React.FC = () => {
   const toggleTheme = () => setDarkMode(!darkMode);
 
   const handleSwapClick = () => {
-    if (swapsLeft <= 0 || gameOver) return;
+    if (swapsLeft <= 0 || gameOver || isAnimating) return;
     if (activeTool === 'swap') {
         setActiveTool('none');
         setSwapSource(null);
@@ -156,7 +206,7 @@ const App: React.FC = () => {
   };
 
   const handleHammerClick = () => {
-    if (hammersLeft <= 0 || gameOver) return;
+    if (hammersLeft <= 0 || gameOver || isAnimating) return;
     if (activeTool === 'hammer') {
         setActiveTool('none');
     } else {
@@ -167,8 +217,9 @@ const App: React.FC = () => {
   };
 
   // Convert Pending Balls to Real Balls
+  // NOTE: Accepts an optional grid to ensure we use the latest state during async flows
   const spawnPendingBalls = (currentGrid: GridState) => {
-    const newGrid = [...currentGrid.map(row => [...row])];
+    const newGrid = [...currentGrid.map(row => [...row.map(c => ({...c}))])];
     
     let emptyCells = getEmptyCells(newGrid);
     
@@ -185,7 +236,8 @@ const App: React.FC = () => {
       newGrid[targetPos.row][targetPos.col] = {
         ...newGrid[targetPos.row][targetPos.col],
         color: pBall.color,
-        id: `ball-${Date.now()}-${Math.random()}`
+        id: `ball-${Date.now()}-${Math.random()}`,
+        isMoving: false
       };
 
       emptyCells = emptyCells.filter(p => !(p.row === targetPos.row && p.col === targetPos.col));
@@ -194,7 +246,7 @@ const App: React.FC = () => {
     const { cellsToRemove, points } = checkLinesAndScore(newGrid);
 
     if (cellsToRemove.length > 0) {
-      playScoreSound(); // Play sound
+      playScoreSound(); 
       setScore(prev => prev + points);
       
       const clearingGrid = [...newGrid.map(r => [...r.map(c => ({...c}))])];
@@ -225,8 +277,85 @@ const App: React.FC = () => {
     }
   };
 
+  // --- Animation Logic ---
+  const moveBallAlongPath = async (path: Position[]) => {
+      if (path.length < 2) return;
+      setIsAnimating(true);
+      setSelectedPos(null);
+
+      const start = path[0];
+      const end = path[path.length - 1];
+      const ball = grid[start.row][start.col];
+      const color = ball.color!;
+      const ballId = ball.id;
+
+      // Animate Movement
+      // We iterate from 0 to length-1, moving the ball step by step
+      for (let i = 0; i < path.length - 1; i++) {
+          const current = path[i];
+          const next = path[i+1];
+
+          // 30ms per step for fluid movement
+          await new Promise(r => setTimeout(r, 30));
+
+          setGrid(prev => {
+              const g = prev.map(r => [...r.map(c => ({...c}))]);
+              // Clear current
+              g[current.row][current.col] = { ...g[current.row][current.col], color: null };
+              // Set next with isMoving flag to suppress pop-in
+              g[next.row][next.col] = { color, id: ballId, isMoving: true }; 
+              return g;
+          });
+      }
+
+      // Movement finished. 
+      // Need to calculate lines based on the final position.
+      // We reconstruct the grid logically to ensure we are checking the correct state
+      // (State updates inside the loop might not be fully flushed to 'grid' variable here)
+      const finalGrid = grid.map(r => [...r.map(c => ({...c}))]);
+      // Apply the final move manually to our local copy to be sure
+      // (Clean up the path trace)
+      finalGrid[start.row][start.col].color = null; 
+      // Final destination ball (remove isMoving flag)
+      finalGrid[end.row][end.col] = { color, id: ballId, isMoving: false };
+      
+      // Update UI to final static state
+      setGrid(finalGrid);
+
+      // Logic Check
+      const { cellsToRemove, points } = checkLinesAndScore(finalGrid);
+
+      if (cellsToRemove.length > 0) {
+           playScoreSound();
+           setScore(prev => prev + points);
+
+           // Show clearing animation
+           const clearingGrid = finalGrid.map(r => [...r.map(c => ({...c}))]);
+           cellsToRemove.forEach(p => { clearingGrid[p.row][p.col].isClearing = true; });
+           setGrid(clearingGrid);
+
+           setTimeout(() => {
+               const cleanedGrid = finalGrid.map(r => [...r.map(c => ({...c}))]);
+               cellsToRemove.forEach(p => {
+                  cleanedGrid[p.row][p.col].color = null;
+                  cleanedGrid[p.row][p.col].isClearing = false;
+               });
+               setGrid(cleanedGrid);
+               setIsAnimating(false);
+           }, 300);
+      } else {
+           // No lines, spawn new balls
+           // Small delay before spawn looks better
+           setTimeout(() => {
+               spawnPendingBalls(finalGrid);
+               setIsAnimating(false);
+           }, 50);
+      }
+  };
+
+
   const handleCellClick = (row: number, col: number) => {
-    if (gameOver) return;
+    if (gameOver || isAnimating) return;
 
     const clickedCell = grid[row][col];
 
@@ -317,42 +446,8 @@ const App: React.FC = () => {
       const path = findPath(grid, selectedPos, { row, col });
       
       if (path) {
-        // Execute move
-        const newGrid = [...grid.map(r => [...r])];
-        const ballColor = newGrid[selectedPos.row][selectedPos.col].color;
-        
-        newGrid[selectedPos.row][selectedPos.col].color = null;
-        newGrid[row][col] = {
-            ...newGrid[row][col],
-            color: ballColor,
-            id: grid[selectedPos.row][selectedPos.col].id
-        };
-
-        setGrid(newGrid);
-        setSelectedPos(null);
-
-        // Check for lines
-        const { cellsToRemove, points } = checkLinesAndScore(newGrid);
-
-        if (cellsToRemove.length > 0) {
-             playScoreSound(); // Play sound
-             const clearingGrid = [...newGrid.map(r => [...r.map(c => ({...c}))])];
-             cellsToRemove.forEach(p => { clearingGrid[p.row][p.col].isClearing = true; });
-             setGrid(clearingGrid);
-             setScore(prev => prev + points);
-
-             setTimeout(() => {
-                 const cleanedGrid = [...newGrid.map(r => [...r.map(c => ({...c}))])];
-                 cellsToRemove.forEach(p => {
-                    cleanedGrid[p.row][p.col].color = null;
-                    cleanedGrid[p.row][p.col].isClearing = false;
-                 });
-                 setGrid(cleanedGrid);
-             }, 300);
-
-        } else {
-            spawnPendingBalls(newGrid);
-        }
+        // Execute animated move
+        moveBallAlongPath(path);
       }
     }
   };
@@ -505,6 +600,7 @@ const App: React.FC = () => {
                             {cell.color && (
                                 <Ball 
                                     color={cell.color} 
+                                    isMoving={cell.isMoving}
                                     className={`
                                         ${cell.isClearing ? 'ball-clear' : ''}
                                         ${isSelected ? 'animate-bounce' : ''}
@@ -520,9 +616,63 @@ const App: React.FC = () => {
         </div>
 
         {gameOver && (
-            <div className="absolute inset-0 z-20 bg-slate-900/80 backdrop-blur-sm rounded-xl flex flex-col items-center justify-center text-white animate-in fade-in duration-300">
-                <h2 className="text-4xl font-black mb-2 text-white drop-shadow-lg">Game Over!</h2>
-                <p className="text-lg mb-6 text-slate-300">Tổng điểm: {score}</p>
+            <div className="absolute inset-0 z-20 bg-slate-900/95 backdrop-blur-sm rounded-xl flex flex-col items-center justify-center text-white animate-in fade-in duration-300 p-4">
+                <h2 className="text-3xl font-black mb-2 text-white drop-shadow-lg">Game Over!</h2>
+                <p className="text-lg mb-4 text-slate-300">Tổng điểm: <span className="text-yellow-400 font-bold">{score}</span></p>
+
+                {showNameInput ? (
+                    <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 shadow-xl mb-4 w-full max-w-xs animate-in zoom-in-95">
+                        <p className="text-center text-green-400 font-bold mb-2">Chúc mừng! Bạn lọt vào Top 5</p>
+                        <div className="flex gap-2">
+                            <input
+                                type="text"
+                                placeholder="Nhập tên của bạn"
+                                maxLength={10}
+                                value={playerName}
+                                onChange={(e) => setPlayerName(e.target.value)}
+                                onKeyDown={(e) => e.key === 'Enter' && handleSaveLeaderboard()}
+                                className="flex-1 bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                autoFocus
+                            />
+                            <button
+                                onClick={handleSaveLeaderboard}
+                                disabled={!playerName.trim()}
+                                className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white p-2 rounded-lg transition-colors"
+                            >
+                                <Save size={20} />
+                            </button>
+                        </div>
+                    </div>
+                ) : (
+                    <div className="bg-slate-800/80 p-4 rounded-xl border border-slate-700 shadow-xl mb-6 w-full max-w-xs max-h-[250px] overflow-y-auto">
+                         <h3 className="text-center font-bold text-slate-400 uppercase tracking-widest text-xs mb-3 flex items-center justify-center gap-2">
+                            <Medal size={14} /> Bảng Xếp Hạng
+                         </h3>
+                         {leaderboard.length > 0 ? (
+                            <div className="space-y-2">
+                                {leaderboard.map((entry, idx) => (
+                                    <div key={idx} className={`flex justify-between items-center p-2 rounded-lg ${idx === 0 ? 'bg-yellow-500/20 border border-yellow-500/30' : 'bg-slate-700/50'}`}>
+                                        <div className="flex items-center gap-3">
+                                            <span className={`
+                                                w-5 h-5 flex items-center justify-center rounded-full text-xs font-bold
+                                                ${idx === 0 ? 'bg-yellow-500 text-slate-900' : 
+                                                  idx === 1 ? 'bg-slate-300 text-slate-900' : 
+                                                  idx === 2 ? 'bg-orange-700 text-white' : 'bg-slate-600 text-slate-300'}
+                                            `}>
+                                                {idx + 1}
+                                            </span>
+                                            <span className="font-semibold text-sm truncate max-w-[100px]">{entry.name}</span>
+                                        </div>
+                                        <span className="font-mono font-bold text-yellow-400">{entry.score}</span>
+                                    </div>
+                                ))}
+                            </div>
+                         ) : (
+                             <p className="text-center text-slate-500 text-sm">Chưa có dữ liệu</p>
+                         )}
+                    </div>
+                )}
+
                 <button 
                     onClick={initGame}
                     className="px-6 py-3 bg-blue-500 hover:bg-blue-400 text-white rounded-full font-bold shadow-lg shadow-blue-500/30 transition-all hover:scale-105 active:scale-95"
