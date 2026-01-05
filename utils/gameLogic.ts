@@ -184,4 +184,3 @@ export const checkLinesAndScore = (grid: GridState): { cellsToRemove: Position[]
         points: finalPoints
     };
 }
-
