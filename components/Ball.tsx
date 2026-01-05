@@ -5,12 +5,15 @@ import { BALL_COLOR_MAP } from '../constants';
 interface BallProps {
   color: BallColor;
   small?: boolean;
+  isMoving?: boolean;
   className?: string;
 }
 
-const Ball: React.FC<BallProps> = ({ color, small = false, className = '' }) => {
+const Ball: React.FC<BallProps> = ({ color, small = false, isMoving = false, className = '' }) => {
   const baseClasses = "rounded-full bg-gradient-to-br shadow-md relative";
-  const sizeClasses = small ? "w-4 h-4" : "w-8 h-8 md:w-10 md:h-10 ball-enter";
+  // Only apply 'ball-enter' if it is NOT moving. This prevents the ball from shrinking/growing at every step of the path.
+  const animationClass = isMoving ? "" : "ball-enter";
+  const sizeClasses = small ? "w-4 h-4" : `w-8 h-8 md:w-10 md:h-10 ${animationClass}`;
   const colorClasses = BALL_COLOR_MAP[color];
 
   return (
