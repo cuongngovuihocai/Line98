@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Trophy, RotateCcw, ArrowRightLeft, Hammer, Moon, Sun, Save, Medal } from 'lucide-react';
+import { Trophy, RotateCcw, ArrowRightLeft, Hammer, Moon, Sun, Save, Medal, Loader2 } from 'lucide-react';
 import { GridState, Position, PendingBall, LeaderboardEntry, BallColor } from './types';
 import { GRID_SIZE, INITIAL_SWAPS, INITIAL_HAMMERS } from './constants';
 import { generateEmptyGrid, getRandomColor, getEmptyCells, checkLinesAndScore } from './utils/gameLogic';
 import { findPath } from './utils/pathfinding';
+import { getLeaderboardData, saveLeaderboardData } from './services/leaderboardService';
 import Ball from './components/Ball';
 import NextColors from './components/NextColors';
 
@@ -29,6 +30,8 @@ const App: React.FC = () => {
 
   // Leaderboard State
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  const [isLoadingLeaderboard, setIsLoadingLeaderboard] = useState(false); // New loading state
+  const [isSavingScore, setIsSavingScore] = useState(false); // New saving state
   const [showNameInput, setShowNameInput] = useState(false);
   const [playerName, setPlayerName] = useState('');
 
@@ -48,22 +51,29 @@ const App: React.FC = () => {
     document.body.style.backgroundColor = darkMode ? '#020617' : '#eef2f6';
   }, [darkMode]);
 
-  // Load High Score & Leaderboard
+  // Load High Score (Local) & Leaderboard (Async Service)
   useEffect(() => {
+    // Highscore vẫn giữ ở local để hiển thị nhanh
     const savedScore = localStorage.getItem('line98-highscore');
     if (savedScore) setHighScore(parseInt(savedScore));
 
-    const savedLB = localStorage.getItem('line98-leaderboard');
-    if (savedLB) {
+    // Load Leaderboard from Service (Simulation or Real Backend)
+    const fetchLeaderboard = async () => {
+        setIsLoadingLeaderboard(true);
         try {
-            setLeaderboard(JSON.parse(savedLB));
-        } catch (e) {
-            console.error("Failed to parse leaderboard", e);
+            const data = await getLeaderboardData();
+            setLeaderboard(data);
+        } catch (error) {
+            console.error("Error loading leaderboard", error);
+        } finally {
+            setIsLoadingLeaderboard(false);
         }
-    }
+    };
+    
+    fetchLeaderboard();
   }, []);
 
-  // Save High Score
+  // Save High Score (Local instant update)
   useEffect(() => {
     if (score > highScore) {
       setHighScore(score);
@@ -74,18 +84,20 @@ const App: React.FC = () => {
   // Check Game Over qualification for Leaderboard
   useEffect(() => {
     if (gameOver && score > 0) {
-      // Check if score qualifies for top 5
-      const isQualifying = leaderboard.length < 5 || score > leaderboard[leaderboard.length - 1].score;
-      if (isQualifying) {
+      // Check if score qualifies for top 5 based on current loaded leaderboard
+      const minScore = leaderboard.length < 5 ? 0 : leaderboard[leaderboard.length - 1].score;
+      if (score > minScore) {
         setShowNameInput(true);
       } else {
         setShowNameInput(false);
       }
     }
-  }, [gameOver, score]); 
+  }, [gameOver, score, leaderboard]); 
 
-  const handleSaveLeaderboard = () => {
+  const handleSaveLeaderboard = async () => {
     if (!playerName.trim()) return;
+    
+    setIsSavingScore(true);
 
     const newEntry: LeaderboardEntry = {
         name: playerName.trim().substring(0, 15),
@@ -93,13 +105,15 @@ const App: React.FC = () => {
         timestamp: Date.now()
     };
 
-    const newBoard = [...leaderboard, newEntry]
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 5);
-
-    setLeaderboard(newBoard);
-    localStorage.setItem('line98-leaderboard', JSON.stringify(newBoard));
-    setShowNameInput(false);
+    try {
+        const updatedBoard = await saveLeaderboardData(newEntry);
+        setLeaderboard(updatedBoard);
+        setShowNameInput(false);
+    } catch (error) {
+        alert("Có lỗi khi lưu điểm, vui lòng thử lại!");
+    } finally {
+        setIsSavingScore(false);
+    }
   };
 
   // --- Sound Effect ---
@@ -630,16 +644,17 @@ const App: React.FC = () => {
                                 maxLength={10}
                                 value={playerName}
                                 onChange={(e) => setPlayerName(e.target.value)}
-                                onKeyDown={(e) => e.key === 'Enter' && handleSaveLeaderboard()}
-                                className="flex-1 bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                onKeyDown={(e) => e.key === 'Enter' && !isSavingScore && handleSaveLeaderboard()}
+                                className="flex-1 bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
                                 autoFocus
+                                disabled={isSavingScore}
                             />
                             <button
                                 onClick={handleSaveLeaderboard}
-                                disabled={!playerName.trim()}
-                                className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white p-2 rounded-lg transition-colors"
+                                disabled={!playerName.trim() || isSavingScore}
+                                className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white p-2 rounded-lg transition-colors flex items-center justify-center min-w-[40px]"
                             >
-                                <Save size={20} />
+                                {isSavingScore ? <Loader2 size={20} className="animate-spin" /> : <Save size={20} />}
                             </button>
                         </div>
                     </div>
@@ -648,7 +663,11 @@ const App: React.FC = () => {
                          <h3 className="text-center font-bold text-slate-400 uppercase tracking-widest text-xs mb-3 flex items-center justify-center gap-2">
                             <Medal size={14} /> Bảng Xếp Hạng
                          </h3>
-                         {leaderboard.length > 0 ? (
+                         {isLoadingLeaderboard ? (
+                             <div className="flex justify-center p-4 text-slate-400">
+                                 <Loader2 size={24} className="animate-spin" />
+                             </div>
+                         ) : leaderboard.length > 0 ? (
                             <div className="space-y-2">
                                 {leaderboard.map((entry, idx) => (
                                     <div key={idx} className={`flex justify-between items-center p-2 rounded-lg ${idx === 0 ? 'bg-yellow-500/20 border border-yellow-500/30' : 'bg-slate-700/50'}`}>
