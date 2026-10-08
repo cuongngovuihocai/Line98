@@ -53,7 +53,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ darkMode = f
             }`}>
               <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
                 <div className="flex items-center gap-2.5">
-                  <img src="/icon.png" alt="Line 98" className="w-8 h-8 rounded-lg shadow-sm" />
+                  <img src={`${import.meta.env.BASE_URL}icon.png`} alt="Line 98" className="w-8 h-8 rounded-lg shadow-sm" />
                   <h3 className="text-base font-bold">Cài đặt Line 98 trên iOS</h3>
                 </div>
                 <button

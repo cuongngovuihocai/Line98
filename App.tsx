@@ -476,7 +476,7 @@ const App: React.FC = () => {
         <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
                 <img 
-                    src="/icon.png" 
+                    src={`${import.meta.env.BASE_URL}icon.png`} 
                     alt="Line 98" 
                     className="w-10 h-10 rounded-2xl shadow-md border border-slate-200 dark:border-slate-700/60 object-cover" 
                 />
