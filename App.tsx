@@ -7,6 +7,8 @@ import { findPath } from './utils/pathfinding';
 import { getLeaderboardData, saveLeaderboardData } from './services/leaderboardService';
 import Ball from './components/Ball';
 import NextColors from './components/NextColors';
+import { PWAInstallButton } from './components/PWAInstallButton';
+import { OfflineIndicator } from './components/OfflineIndicator';
 
 const App: React.FC = () => {
   // --- State ---
@@ -472,8 +474,17 @@ const App: React.FC = () => {
       {/* Header */}
       <div className="w-full max-w-md flex flex-col gap-4 mb-6">
         <div className="flex items-center justify-between">
-            <h1 className={`text-3xl font-bold tracking-tight transition-colors ${darkMode ? 'text-white' : 'text-slate-800'}`}>Line 98</h1>
-            <div className="flex gap-2">
+            <div className="flex items-center gap-3">
+                <img 
+                    src="/icon.png" 
+                    alt="Line 98" 
+                    className="w-10 h-10 rounded-2xl shadow-md border border-slate-200 dark:border-slate-700/60 object-cover" 
+                />
+                <h1 className={`text-2xl sm:text-3xl font-black tracking-tight transition-colors ${darkMode ? 'text-white' : 'text-slate-800'}`}>Line 98</h1>
+            </div>
+            <div className="flex items-center gap-2">
+                <PWAInstallButton darkMode={darkMode} />
+
                 <button 
                     onClick={toggleTheme}
                     className={`p-2 rounded-full shadow-sm border transition-all active:scale-95 ${
@@ -720,6 +731,8 @@ const App: React.FC = () => {
             </div>
         )}
       </div>
+
+      <OfflineIndicator />
 
     </div>
   );
