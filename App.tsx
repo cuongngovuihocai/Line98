@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Trophy, RotateCcw, ArrowRightLeft, Hammer, Moon, Sun, Save, Medal, Loader2 } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Trophy, RotateCcw, ArrowRightLeft, Hammer, Moon, Sun, Save, Medal, Loader2, Lightbulb, Flame, Sparkles } from 'lucide-react';
 import { GridState, Position, PendingBall, LeaderboardEntry, BallColor } from './types';
-import { GRID_SIZE, INITIAL_SWAPS, INITIAL_HAMMERS } from './constants';
+import { GRID_SIZE, INITIAL_SWAPS, INITIAL_HAMMERS, INITIAL_HINTS } from './constants';
 import { generateEmptyGrid, getRandomColor, getEmptyCells, checkLinesAndScore } from './utils/gameLogic';
 import { findPath } from './utils/pathfinding';
+import { findBestHint, HintMove } from './utils/hintLogic';
 import { getLeaderboardData, saveLeaderboardData } from './services/leaderboardService';
 import Ball from './components/Ball';
 import NextColors from './components/NextColors';
@@ -21,11 +22,19 @@ const App: React.FC = () => {
   const [gameOver, setGameOver] = useState(false);
   const [isAnimating, setIsAnimating] = useState(false); // Block interactions during movement
   
-  // Power-ups State
+  // Power-ups & Hints State
   const [swapsLeft, setSwapsLeft] = useState(INITIAL_SWAPS);
   const [hammersLeft, setHammersLeft] = useState(INITIAL_HAMMERS);
+  const [hintsLeft, setHintsLeft] = useState(INITIAL_HINTS);
+  const [activeHint, setActiveHint] = useState<HintMove | null>(null);
+  const [hintMessage, setHintMessage] = useState<string | null>(null);
   const [activeTool, setActiveTool] = useState<'none' | 'hammer' | 'swap'>('none');
   const [swapSource, setSwapSource] = useState<Position | null>(null);
+
+  // Combo Streak State
+  const [comboStreak, setComboStreak] = useState(0);
+  const [comboNotice, setComboNotice] = useState<{ count: number; bonus: number } | null>(null);
+  const prevScoreRef = useRef(0);
 
   // Theme State
   const [darkMode, setDarkMode] = useState(false);
@@ -118,33 +127,84 @@ const App: React.FC = () => {
     }
   };
 
-  // --- Sound Effect ---
-  const playScoreSound = useCallback(() => {
+  // Milestone Bonus: Every 100 points, grant +1 free Hint & +1 Swap
+  useEffect(() => {
+    const prevHundred = Math.floor(prevScoreRef.current / 100);
+    const currHundred = Math.floor(score / 100);
+    if (currHundred > prevHundred && prevScoreRef.current > 0) {
+      setHintsLeft(prev => Math.min(prev + 1, 15));
+      setSwapsLeft(prev => Math.min(prev + 1, 15));
+    }
+    prevScoreRef.current = score;
+  }, [score]);
+
+  // --- Sound Effects (Web Audio API) ---
+  const playScoreSound = useCallback((combo: number = 1) => {
     try {
         const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
         if (!AudioContext) return;
         
         const ctx = new AudioContext();
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
         
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        
-        // Create a pleasant "ding" sound
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(659.25, ctx.currentTime);
-        osc.frequency.linearRampToValueAtTime(880, ctx.currentTime + 0.1);
-        
-        // Fade out
-        gain.gain.setValueAtTime(0.15, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6);
-        
-        osc.start();
-        osc.stop(ctx.currentTime + 0.6);
+        if (combo <= 1) {
+          // Normal pleasant "ding" sound
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(659.25, ctx.currentTime);
+          osc.frequency.linearRampToValueAtTime(880, ctx.currentTime + 0.1);
+          gain.gain.setValueAtTime(0.15, ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+          osc.start();
+          osc.stop(ctx.currentTime + 0.5);
+        } else {
+          // Combo Chord Arpeggio: rising notes that reward consecutive clears
+          const baseFreq = 523.25; // C5
+          const notes = [
+            baseFreq,
+            baseFreq * (combo >= 3 ? 1.25 : 1.2),
+            baseFreq * 1.5,
+            baseFreq * (1 + Math.min(combo, 6) * 0.25)
+          ];
+
+          notes.forEach((freq, idx) => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.type = 'triangle';
+            const startTime = ctx.currentTime + idx * 0.08;
+            osc.frequency.setValueAtTime(freq, startTime);
+            gain.gain.setValueAtTime(0.16, startTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.45);
+            osc.start(startTime);
+            osc.stop(startTime + 0.45);
+          });
+        }
     } catch (e) {
         // Ignore audio errors
     }
+  }, []);
+
+  const playHintSound = useCallback(() => {
+    try {
+        const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+        if (!AudioContext) return;
+        const ctx = new AudioContext();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+        osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15); // A5
+        gain.gain.setValueAtTime(0.12, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.4);
+    } catch (e) {}
   }, []);
 
   // Helper to generate N pending balls
@@ -191,11 +251,19 @@ const App: React.FC = () => {
     setGameOver(false);
     setIsAnimating(false);
     
-    // Reset Power-ups
+    // Reset Power-ups & Hints
     setSwapsLeft(INITIAL_SWAPS);
     setHammersLeft(INITIAL_HAMMERS);
+    setHintsLeft(INITIAL_HINTS);
+    setActiveHint(null);
+    setHintMessage(null);
     setActiveTool('none');
     setSwapSource(null);
+
+    // Reset Combo
+    setComboStreak(0);
+    setComboNotice(null);
+    prevScoreRef.current = 0;
 
     // Reset Leaderboard Input
     setShowNameInput(false);
@@ -209,8 +277,38 @@ const App: React.FC = () => {
 
   const toggleTheme = () => setDarkMode(!darkMode);
 
+  const handleHintClick = () => {
+    if (gameOver || isAnimating) return;
+    if (activeHint) {
+        setActiveHint(null);
+        setHintMessage(null);
+        return;
+    }
+    if (hintsLeft <= 0) {
+        setHintMessage("Đã hết lượt gợi ý! Hãy ăn chuỗi Combo để nhận thêm!");
+        setTimeout(() => setHintMessage(null), 2500);
+        return;
+    }
+
+    const best = findBestHint(grid);
+    if (best) {
+        setHintsLeft(prev => prev - 1);
+        setActiveHint(best);
+        setSelectedPos(best.from);
+        setActiveTool('none');
+        setSwapSource(null);
+        playHintSound();
+        setHintMessage(best.description);
+        setTimeout(() => setHintMessage(null), 4000);
+    } else {
+        setHintMessage("Không tìm thấy đường đi nào phù hợp lúc này!");
+        setTimeout(() => setHintMessage(null), 2500);
+    }
+  };
+
   const handleSwapClick = () => {
     if (swapsLeft <= 0 || gameOver || isAnimating) return;
+    setActiveHint(null);
     if (activeTool === 'swap') {
         setActiveTool('none');
         setSwapSource(null);
@@ -223,6 +321,7 @@ const App: React.FC = () => {
 
   const handleHammerClick = () => {
     if (hammersLeft <= 0 || gameOver || isAnimating) return;
+    setActiveHint(null);
     if (activeTool === 'hammer') {
         setActiveTool('none');
     } else {
@@ -298,6 +397,8 @@ const App: React.FC = () => {
       if (path.length < 2) return;
       setIsAnimating(true);
       setSelectedPos(null);
+      setActiveHint(null);
+      setHintMessage(null);
 
       const start = path[0];
       const end = path[path.length - 1];
@@ -327,12 +428,8 @@ const App: React.FC = () => {
       // Movement finished. 
       // Need to calculate lines based on the final position.
       // We reconstruct the grid logically to ensure we are checking the correct state
-      // (State updates inside the loop might not be fully flushed to 'grid' variable here)
       const finalGrid = grid.map(r => [...r.map(c => ({...c}))]);
-      // Apply the final move manually to our local copy to be sure
-      // (Clean up the path trace)
       finalGrid[start.row][start.col].color = null; 
-      // Final destination ball (remove isMoving flag)
       finalGrid[end.row][end.col] = { color, id: ballId, isMoving: false };
       
       // Update UI to final static state
@@ -342,8 +439,25 @@ const App: React.FC = () => {
       const { cellsToRemove, points } = checkLinesAndScore(finalGrid);
 
       if (cellsToRemove.length > 0) {
-           playScoreSound();
-           setScore(prev => prev + points);
+           const nextStreak = comboStreak + 1;
+           setComboStreak(nextStreak);
+
+           let multiplier = 1;
+           if (nextStreak === 2) multiplier = 1.5;
+           else if (nextStreak >= 3) multiplier = 1 + (nextStreak - 1) * 0.5;
+
+           const earnedPoints = Math.round(points * multiplier);
+           const bonusPoints = earnedPoints - points;
+
+           playScoreSound(nextStreak);
+           setScore(prev => prev + earnedPoints);
+
+           if (nextStreak >= 2) {
+               // Reward +1 extra Hint on combo streak >= 2
+               setHintsLeft(prev => Math.min(prev + 1, 15));
+               setComboNotice({ count: nextStreak, bonus: bonusPoints });
+               setTimeout(() => setComboNotice(null), 2500);
+           }
 
            // Show clearing animation
            const clearingGrid = finalGrid.map(r => [...r.map(c => ({...c}))]);
@@ -360,8 +474,8 @@ const App: React.FC = () => {
                setIsAnimating(false);
            }, 300);
       } else {
-           // No lines, spawn new balls
-           // Small delay before spawn looks better
+           // No lines cleared: reset combo streak and spawn new balls
+           setComboStreak(0);
            setTimeout(() => {
                spawnPendingBalls(finalGrid);
                setIsAnimating(false);
@@ -517,9 +631,17 @@ const App: React.FC = () => {
                 ? 'bg-slate-900 border-slate-800' 
                 : 'bg-white border-slate-100'
         }`}>
-            <div className="flex flex-col">
-                <span className={`text-xs font-bold uppercase tracking-wider ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Điểm</span>
-                <span className={`text-2xl font-black ${darkMode ? 'text-white' : 'text-slate-800'}`}>{score}</span>
+            <div className="flex items-center gap-2">
+                <div className="flex flex-col">
+                    <span className={`text-xs font-bold uppercase tracking-wider ${darkMode ? 'text-slate-500' : 'text-slate-400'}`}>Điểm</span>
+                    <span className={`text-2xl font-black ${darkMode ? 'text-white' : 'text-slate-800'}`}>{score}</span>
+                </div>
+                {comboStreak >= 2 && (
+                    <div className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-gradient-to-r from-amber-500 to-orange-500 text-white text-xs font-black shadow-md shadow-orange-500/30 animate-pulse">
+                        <Flame size={13} className="fill-white" />
+                        <span>x{comboStreak}</span>
+                    </div>
+                )}
             </div>
              
              <NextColors colors={pendingBalls.map(p => p.color)} />
@@ -531,59 +653,23 @@ const App: React.FC = () => {
                 <span className="text-2xl font-black text-amber-500">{highScore}</span>
             </div>
         </div>
-
-        {/* Tools */}
-        <div className={`flex items-center justify-center gap-4 p-3 rounded-2xl shadow-sm border transition-colors ${
-            darkMode 
-                ? 'bg-slate-900 border-slate-800' 
-                : 'bg-white border-slate-100'
-        }`}>
-            {/* Swap Button */}
-            <button 
-                onClick={handleSwapClick}
-                disabled={swapsLeft === 0}
-                className={`
-                    flex items-center gap-2 px-4 py-2 rounded-xl font-semibold text-sm transition-all
-                    ${activeTool === 'swap'
-                        ? 'bg-amber-500 text-white shadow-lg shadow-amber-500/30 scale-105'
-                        : swapsLeft > 0 
-                            ? (darkMode ? 'bg-amber-900/30 text-amber-400 hover:bg-amber-900/50' : 'bg-amber-50 text-amber-600 hover:bg-amber-100') + ' active:scale-95' 
-                            : (darkMode ? 'bg-slate-800 text-slate-600' : 'bg-slate-50 text-slate-300') + ' cursor-not-allowed'}
-                `}
-                title="Hoán đổi 2 bóng"
-            >
-                <ArrowRightLeft size={18} />
-                <span>Hoán đổi ({swapsLeft})</span>
-            </button>
-
-            <div className={`w-px h-6 ${darkMode ? 'bg-slate-800' : 'bg-slate-200'}`}></div>
-
-            {/* Hammer Button */}
-            <button 
-                onClick={handleHammerClick}
-                disabled={hammersLeft === 0}
-                className={`
-                    flex items-center gap-2 px-4 py-2 rounded-xl font-semibold text-sm transition-all
-                    ${activeTool === 'hammer' 
-                        ? 'bg-rose-500 text-white shadow-lg shadow-rose-500/30 scale-105' 
-                        : hammersLeft > 0
-                            ? (darkMode ? 'bg-rose-900/30 text-rose-400 hover:bg-rose-900/50' : 'bg-rose-50 text-rose-600 hover:bg-rose-100') + ' active:scale-95'
-                            : (darkMode ? 'bg-slate-800 text-slate-600' : 'bg-slate-50 text-slate-300') + ' cursor-not-allowed'}
-                `}
-                title="Phá bóng"
-            >
-                <Hammer size={18} />
-                <span>Phá bóng ({hammersLeft})</span>
-            </button>
-        </div>
       </div>
 
       {/* Game Board - Always Dark for best contrast */}
       <div className={`
           bg-[#1e293b] p-3 rounded-xl shadow-xl shadow-slate-400/20 border border-slate-700 relative 
           ${activeTool === 'hammer' ? 'ring-2 ring-rose-400 ring-offset-2 ' + (darkMode ? 'ring-offset-slate-900' : 'ring-offset-[#eef2f6]') : ''}
-          ${activeTool === 'swap' ? 'ring-2 ring-amber-400 ring-offset-2 ' + (darkMode ? 'ring-offset-slate-900' : 'ring-offset-[#eef2f6]') : ''}
+          ${activeTool === 'swap' ? 'ring-2 ring-indigo-400 ring-offset-2 ' + (darkMode ? 'ring-offset-slate-900' : 'ring-offset-[#eef2f6]') : ''}
+          ${activeHint ? 'ring-2 ring-amber-400 ring-offset-2 ' + (darkMode ? 'ring-offset-slate-900' : 'ring-offset-[#eef2f6]') : ''}
       `}>
+        {/* Combo Celebration Toast */}
+        {comboNotice && (
+            <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 px-3.5 py-1 rounded-full bg-gradient-to-r from-amber-500 via-orange-500 to-red-500 text-white text-xs font-black shadow-lg shadow-orange-500/40 animate-bounce">
+                <Flame size={14} className="fill-white animate-pulse" />
+                <span>COMBO x{comboNotice.count}! +{comboNotice.bonus} Thưởng (+1 Gợi ý)</span>
+            </div>
+        )}
+
         <div 
             className="grid gap-1 bg-slate-800 p-1 rounded-lg"
             style={{ 
@@ -594,6 +680,8 @@ const App: React.FC = () => {
                 row.map((cell, cIdx) => {
                     const isSelected = selectedPos?.row === rIdx && selectedPos?.col === cIdx;
                     const isSwapSource = swapSource?.row === rIdx && swapSource?.col === cIdx;
+                    const isHintFrom = activeHint?.from.row === rIdx && activeHint?.from.col === cIdx;
+                    const isHintTo = activeHint?.to.row === rIdx && activeHint?.to.col === cIdx;
                     
                     const pendingBall = pendingBalls.find(p => p.pos.row === rIdx && p.pos.col === cIdx);
 
@@ -607,13 +695,22 @@ const App: React.FC = () => {
                                 cursor-pointer transition-colors duration-200
                                 relative
                                 ${isSelected ? 'bg-slate-600 ring-2 ring-blue-400 ring-offset-2 ring-offset-slate-800 z-10' : 'bg-slate-700 hover:bg-slate-600'}
-                                ${isSwapSource ? 'bg-amber-900/50 ring-2 ring-amber-400 ring-offset-2 ring-offset-slate-800 z-10 animate-pulse' : ''}
+                                ${isSwapSource ? 'bg-indigo-900/50 ring-2 ring-indigo-400 ring-offset-2 ring-offset-slate-800 z-10 animate-pulse' : ''}
+                                ${isHintFrom ? 'ring-2 ring-amber-400 ring-offset-2 ring-offset-slate-800 z-10 bg-amber-950/40' : ''}
+                                ${isHintTo ? 'ring-2 ring-dashed ring-amber-400 bg-amber-500/20 z-10 animate-pulse' : ''}
                                 ${activeTool === 'hammer' && cell.color ? 'hover:bg-rose-900 hover:ring-2 hover:ring-rose-400 hover:z-10' : ''}
-                                ${activeTool === 'swap' && cell.color && !isSwapSource ? 'hover:bg-amber-900 hover:ring-2 hover:ring-amber-400 hover:z-10' : ''}
+                                ${activeTool === 'swap' && cell.color && !isSwapSource ? 'hover:bg-indigo-900 hover:ring-2 hover:ring-indigo-400 hover:z-10' : ''}
                             `}
                         >
+                            {/* Target Destination Indicator for Hint */}
+                            {isHintTo && !cell.color && (
+                                <div className="absolute inset-1 rounded-md border-2 border-dashed border-amber-400 flex items-center justify-center">
+                                    <Sparkles size={16} className="text-amber-300 animate-spin" />
+                                </div>
+                            )}
+
                             {/* Pending Ball */}
-                            {!cell.color && pendingBall && (
+                            {!cell.color && !isHintTo && pendingBall && (
                                 <Ball 
                                     color={pendingBall.color} 
                                     small
@@ -631,6 +728,7 @@ const App: React.FC = () => {
                                         ${isSelected ? 'animate-bounce' : ''}
                                         ${activeTool === 'hammer' ? 'animate-pulse' : ''}
                                         ${isSwapSource ? 'scale-110' : ''}
+                                        ${isHintFrom ? 'ring-4 ring-amber-400/90 shadow-lg shadow-amber-400/50 animate-pulse scale-105' : ''}
                                     `}
                                 />
                             )}
@@ -713,7 +811,82 @@ const App: React.FC = () => {
         )}
       </div>
 
-      <div className={`mt-8 text-center text-sm font-semibold max-w-md space-y-2 transition-colors ${darkMode ? 'text-amber-500' : 'text-amber-600'}`}>
+      {/* Bottom Helper Toolbar - Integrated directly below the game board */}
+      <div className="mt-4 w-full max-w-md flex flex-col items-center gap-2">
+        <div className={`flex items-center justify-between gap-2 p-2.5 sm:p-3 rounded-2xl shadow-sm border transition-colors w-full ${
+            darkMode 
+                ? 'bg-slate-900 border-slate-800' 
+                : 'bg-white border-slate-100'
+        }`}>
+            {/* Hint Button */}
+            <button 
+                onClick={handleHintClick}
+                disabled={hintsLeft === 0 && !activeHint}
+                className={`
+                    flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl font-bold text-xs sm:text-sm transition-all
+                    ${activeHint
+                        ? 'bg-amber-500 text-white shadow-lg shadow-amber-500/30 scale-102 ring-2 ring-amber-400'
+                        : hintsLeft > 0 
+                            ? (darkMode ? 'bg-amber-950/40 text-amber-400 hover:bg-amber-900/50' : 'bg-amber-50 text-amber-600 hover:bg-amber-100') + ' active:scale-95' 
+                            : (darkMode ? 'bg-slate-800 text-slate-600' : 'bg-slate-50 text-slate-300') + ' cursor-not-allowed'}
+                `}
+                title="Gợi ý nước đi thông minh"
+            >
+                <Lightbulb size={17} className={activeHint ? 'animate-bounce text-yellow-200' : ''} />
+                <span>Gợi ý ({hintsLeft})</span>
+            </button>
+
+            <div className={`w-px h-6 ${darkMode ? 'bg-slate-800' : 'bg-slate-200'}`}></div>
+
+            {/* Swap Button */}
+            <button 
+                onClick={handleSwapClick}
+                disabled={swapsLeft === 0}
+                className={`
+                    flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl font-bold text-xs sm:text-sm transition-all
+                    ${activeTool === 'swap'
+                        ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30 scale-102'
+                        : swapsLeft > 0 
+                            ? (darkMode ? 'bg-indigo-950/40 text-indigo-400 hover:bg-indigo-900/50' : 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100') + ' active:scale-95' 
+                            : (darkMode ? 'bg-slate-800 text-slate-600' : 'bg-slate-50 text-slate-300') + ' cursor-not-allowed'}
+                `}
+                title="Hoán đổi 2 bóng"
+            >
+                <ArrowRightLeft size={17} />
+                <span>Đổi chỗ ({swapsLeft})</span>
+            </button>
+
+            <div className={`w-px h-6 ${darkMode ? 'bg-slate-800' : 'bg-slate-200'}`}></div>
+
+            {/* Hammer Button */}
+            <button 
+                onClick={handleHammerClick}
+                disabled={hammersLeft === 0}
+                className={`
+                    flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl font-bold text-xs sm:text-sm transition-all
+                    ${activeTool === 'hammer' 
+                        ? 'bg-rose-500 text-white shadow-lg shadow-rose-500/30 scale-102' 
+                        : hammersLeft > 0
+                            ? (darkMode ? 'bg-rose-950/40 text-rose-400 hover:bg-rose-900/50' : 'bg-rose-50 text-rose-600 hover:bg-rose-100') + ' active:scale-95'
+                            : (darkMode ? 'bg-slate-800 text-slate-600' : 'bg-slate-50 text-slate-300') + ' cursor-not-allowed'}
+                `}
+                title="Phá bóng"
+            >
+                <Hammer size={17} />
+                <span>Phá ({hammersLeft})</span>
+            </button>
+        </div>
+
+        {/* Dynamic Helper Message */}
+        {hintMessage && (
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/10 text-amber-500 dark:text-amber-400 text-xs font-semibold animate-in fade-in duration-200">
+                <Sparkles size={13} className="shrink-0 text-amber-400" />
+                <span>{hintMessage}</span>
+            </div>
+        )}
+      </div>
+
+      <div className={`mt-6 text-center text-sm font-semibold max-w-md space-y-2 transition-colors ${darkMode ? 'text-amber-500' : 'text-amber-600'}`}>
         {activeTool === 'hammer' ? (
             <p className="text-rose-500 font-bold animate-pulse">Chọn một quả bóng để phá hủy!</p>
         ) : activeTool === 'swap' ? (

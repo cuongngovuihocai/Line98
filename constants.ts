@@ -6,6 +6,7 @@ export const MIN_LINE_LENGTH = 5;
 
 export const INITIAL_SWAPS = 10;
 export const INITIAL_HAMMERS = 10;
+export const INITIAL_HINTS = 5;
 
 export const COLORS = [
   BallColor.Red,
